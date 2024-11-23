@@ -317,7 +317,7 @@ class SongUNet(torch.nn.Module):
                 self.dec[f'{res}x{res}_aux_norm'] = GroupNorm(num_channels=cout, eps=1e-6)
                 self.dec[f'{res}x{res}_aux_conv'] = Conv2d(in_channels=cout, out_channels=out_channels, kernel=3, **init_zero)
 
-    def forward(self, x, noise_labels, class_labels, augment_labels=None):
+    def forward(self, x, noise_labels, class_labels, augment_labels=None, return_features=False):
         # Mapping.
         emb = self.map_noise(noise_labels)
         emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # swap sin/cos
@@ -333,6 +333,7 @@ class SongUNet(torch.nn.Module):
 
         # Encoder.
         skips = []
+        res = []
         aux = x
         for name, block in self.enc.items():
             if 'aux_down' in name:
@@ -344,6 +345,9 @@ class SongUNet(torch.nn.Module):
             else:
                 x = block(x, emb) if isinstance(block, UNetBlock) else block(x)
                 skips.append(x)
+                if name == "32x32_block3" or "16x16_down" in name:
+                # if "16x16_block3" in name or "8x8_down" in name:
+                    res.append(x)
 
         # Decoder.
         aux = None
@@ -360,6 +364,11 @@ class SongUNet(torch.nn.Module):
                 if x.shape[1] != block.in_channels:
                     x = torch.cat([x, skips.pop()], dim=1)
                 x = block(x, emb)
+                # if name == "16x16_block4":
+                if "32x32_block3" in name:
+                    res.append(x)
+        if return_features:
+            return aux, res
         return aux
 
 #----------------------------------------------------------------------------
@@ -629,7 +638,7 @@ class iDDPMPrecond(torch.nn.Module):
 # Space of Diffusion-Based Generative Models" (EDM).
 
 @persistence.persistent_class
-class EDMPrecond(torch.nn.Module):
+class EDMPrecond_(torch.nn.Module):
     def __init__(self,
         img_resolution,                     # Image resolution.
         img_channels,                       # Number of color channels.
@@ -671,3 +680,159 @@ class EDMPrecond(torch.nn.Module):
         return torch.as_tensor(sigma)
 
 #----------------------------------------------------------------------------
+
+@persistence.persistent_class
+class UNetFeatureClassifier(torch.nn.Module):
+    def __init__(self,
+        mid_features,           # Number of channels in middle layer
+        dec_features,           # List of number of channels in decoder layers
+        num_classes,           # Number of output classes
+        dropout=0.1,           # Dropout probability
+    ):
+        super().__init__()
+        
+        # Global average pooling will handle different spatial dimensions
+        self.pool = torch.nn.AdaptiveAvgPool2d(1)
+        
+        # Calculate total features after concatenation
+        total_features = mid_features + sum(dec_features)
+        
+        # Simple MLP for classification
+        self.classifier = torch.nn.Sequential(
+            torch.nn.Linear(total_features, 512),
+            torch.nn.SiLU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Linear(512, num_classes)
+        )
+
+    def forward(self, mid_feat, dec_feats):
+        # Pool and flatten middle features
+        x = self.pool(mid_feat).flatten(1)
+        
+        # Pool and flatten each decoder feature map
+        for feat in dec_feats:
+            pooled = self.pool(feat).flatten(1)
+            x = torch.cat([x, pooled], dim=1)
+            
+        # Final classification
+        return self.classifier(x)
+
+#----------------------------------------------------------------------------
+
+@persistence.persistent_class
+class UNetFeatureClassifierV2(torch.nn.Module):
+    def __init__(self,
+        # mid_features,           # Number of channels in middle layer
+        dec_features=[256, 256, 256],           # List of number of channels in decoder layers
+        num_classes=2,           # Number of output classes
+        target_resolution=8,   # Target spatial resolution for all features
+        hidden_dim=256,        # Hidden dimension for feature processing
+        dropout=0.1,           # Dropout probability
+    ):
+        super().__init__()
+        
+        # # Process middle features
+        # self.mid_conv = Conv2d(mid_features, hidden_dim, kernel=3)
+        # self.mid_pool = torch.nn.AdaptiveAvgPool2d(target_resolution)
+        
+        # Process decoder features
+        self.dec_convs = torch.nn.ModuleList([
+            Conv2d(feat_dim, hidden_dim, kernel=3)
+            for feat_dim in dec_features
+        ])
+        self.dec_pools = torch.nn.ModuleList([
+            torch.nn.AdaptiveAvgPool2d(target_resolution)
+            for _ in dec_features
+        ])
+
+        # Conv Output
+        self.conv_out = Conv2d(hidden_dim, hidden_dim, kernel=3)
+        
+        # Calculate total features after processing
+        total_features = hidden_dim  * target_resolution * target_resolution # * (len(dec_features) + 1)
+        
+        # MLP classifier
+        self.classifier = torch.nn.Sequential(
+            torch.nn.Linear(total_features, 1024),
+            torch.nn.LayerNorm(1024),
+            torch.nn.SiLU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Linear(1024, 512),
+            torch.nn.LayerNorm(512),
+            torch.nn.SiLU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Linear(512, num_classes)
+        )
+
+    def forward(self, dec_feats):
+        # Process middle features
+        # x = self.mid_conv(mid_feat)
+        # x = self.mid_pool(x)
+        x = dec_feats[0]
+        batch_size = x.shape[0]
+        # features = [x]
+        x = torch.empty(batch_size, 256, 8, 8, device=x.device)
+        
+        # Process decoder features
+        for feat, conv, pool in zip(dec_feats, self.dec_convs, self.dec_pools):
+            processed = conv(feat)
+            processed = pool(processed)
+            # features.append(processed)
+            x = x + processed
+        
+        x = self.conv_out(x)
+        x = x.view(batch_size, -1)
+        # Concatenate all features
+        # x = torch.cat([f.view(batch_size, -1) for f in features], dim=1)
+        
+        # Final classification
+        return self.classifier(x)
+
+
+
+@persistence.persistent_class
+class EDMPrecond(torch.nn.Module):
+    def __init__(self,
+        img_resolution,                     # Image resolution.
+        img_channels,                       # Number of color channels.
+        label_dim       = 0,                # Number of class labels, 0 = unconditional.
+        use_fp16        = False,            # Execute the underlying model at FP16 precision?
+        sigma_min       = 0,                # Minimum supported noise level.
+        sigma_max       = float('inf'),     # Maximum supported noise level.
+        sigma_data      = 0.5,              # Expected standard deviation of the training data.
+        model_type      = 'DhariwalUNet',   # Class name of the underlying model.
+        **model_kwargs,                     # Keyword arguments for the underlying model.
+    ):
+        super().__init__()
+        self.img_resolution = img_resolution
+        self.img_channels = img_channels
+        self.label_dim = label_dim
+        self.use_fp16 = use_fp16
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.sigma_data = sigma_data
+        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
+        self.classifier = UNetFeatureClassifierV2()
+
+    def forward(self, x, sigma, class_labels=None, force_fp32=False, return_logits=False, **model_kwargs):
+        x = x.to(torch.float32)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
+        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
+
+        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
+        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
+        c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
+        c_noise = sigma.log() / 4
+
+        F_x, dec_feats = self.model((c_in * x).to(dtype), c_noise.flatten(), class_labels=class_labels, return_features=True, **model_kwargs)
+        assert F_x.dtype == dtype
+        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        class_logits = self.classifier(dec_feats)
+        if return_logits:
+            return D_x, class_logits
+        else:
+            return D_x
+
+    def round_sigma(self, sigma):
+        return torch.as_tensor(sigma)

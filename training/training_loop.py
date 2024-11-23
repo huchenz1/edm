@@ -46,6 +46,8 @@ def training_loop(
     resume_kimg         = 0,        # Start from the given training progress.
     cudnn_benchmark     = True,     # Enable torch.backends.cudnn.benchmark?
     device              = torch.device('cuda'),
+    src_dataset_kwargs  = {},
+    src_data_loader_kwargs = {},
 ):
     # Initialize.
     start_time = time.time()
@@ -71,7 +73,7 @@ def training_loop(
 
     # Construct network.
     dist.print0('Constructing network...')
-    interface_kwargs = dict(img_resolution=dataset_obj.resolution, img_channels=dataset_obj.num_channels, label_dim=dataset_obj.label_dim)
+    interface_kwargs = dict(img_resolution=64, img_channels=dataset_obj.num_channels, label_dim=dataset_obj.label_dim) # dataset_obj.resolution
     net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs) # subclass of torch.nn.Module
     net.train().requires_grad_(True).to(device)
     if dist.get_rank() == 0:
@@ -80,6 +82,23 @@ def training_loop(
             sigma = torch.ones([batch_gpu], device=device)
             labels = torch.zeros([batch_gpu, net.label_dim], device=device)
             misc.print_module_summary(net, [images, sigma, labels], max_nesting=2)
+
+
+    # classifier = dnnlib.util.construct_class_by_name(class_name="training.networks.UNetFeatureClassifierV2") # subclass of torch.nn.Module
+    # classifier.train().requires_grad_(True).to(device)
+    # ddp_classifier = torch.nn.parallel.DistributedDataParallel(classifier, device_ids=[device])
+    # optimizer_classifier = dnnlib.util.construct_class_by_name(params=classifier.parameters(), **optimizer_kwargs) # subclass of torch.optim.Optimizer
+    # # if dist.get_rank() == 0:
+    #     with torch.no_grad():
+    #         images = torch.zeros([batch_gpu, net.img_channels, net.img_resolution, net.img_resolution], device=device)
+    #         sigma = torch.ones([batch_gpu], device=device)
+    #         labels = torch.zeros([batch_gpu, net.label_dim], device=device)
+    #         misc.print_module_summary(net, [images, sigma, labels], max_nesting=2)
+    loss_ce = torch.nn.CrossEntropyLoss()
+    src_dataset_obj = dnnlib.util.construct_class_by_name(**src_dataset_kwargs) # subclass of training.dataset.Dataset
+    src_dataset_sampler = misc.InfiniteSampler(dataset=src_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed)
+    src_dataset_iterator = iter(torch.utils.data.DataLoader(dataset=src_dataset_obj, sampler=src_dataset_sampler, batch_size=batch_gpu, **data_loader_kwargs))
+
 
     # Setup optimizer.
     dist.print0('Setting up optimizer...')
@@ -124,12 +143,27 @@ def training_loop(
         optimizer.zero_grad(set_to_none=True)
         for round_idx in range(num_accumulation_rounds):
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
+                # images, labels = next(dataset_iterator)
+                # images = images.to(device).to(torch.float32) / 127.5 - 1
+                # labels = labels.to(device)
+                # src_images, src_labels = next(src_dataset_iterator)
+                # src_images = src_images.to(device).to(torch.float32) / 127.5 - 1
+                # src_labels = src_labels.to(device)
+                # loss_edm, loss_cls = loss_fn(net=ddp, images=images, labels=labels, augment_pipe=augment_pipe, src_images=src_images, src_labels=src_labels)
+                # training_stats.report('Loss/loss_edm', loss_edm)
+                # training_stats.report('Loss/loss_cls', loss_cls)
+                # loss = loss_edm + loss_cls #  * 0.1
+                # loss.sum().mul(loss_scaling / batch_gpu_total).backward()
+                # print(f'loss_edm: {loss_edm.mean()}, loss_cls: {loss_cls.mean()}, loss: {loss.mean()}')
+
                 images, labels = next(dataset_iterator)
                 images = images.to(device).to(torch.float32) / 127.5 - 1
                 labels = labels.to(device)
-                loss = loss_fn(net=ddp, images=images, labels=labels, augment_pipe=augment_pipe)
-                training_stats.report('Loss/loss', loss)
+                loss_edm = loss_fn(net=ddp, images=images, labels=labels, augment_pipe=augment_pipe)
+                training_stats.report('Loss/loss_edm', loss_edm)
+                loss = loss_edm
                 loss.sum().mul(loss_scaling / batch_gpu_total).backward()
+                print(f'loss: {loss.mean()}')
 
         # Update weights.
         for g in optimizer.param_groups:
@@ -165,6 +199,7 @@ def training_loop(
         fields += [f"cpumem {training_stats.report0('Resources/cpu_mem_gb', psutil.Process(os.getpid()).memory_info().rss / 2**30):<6.2f}"]
         fields += [f"gpumem {training_stats.report0('Resources/peak_gpu_mem_gb', torch.cuda.max_memory_allocated(device) / 2**30):<6.2f}"]
         fields += [f"reserved {training_stats.report0('Resources/peak_gpu_mem_reserved_gb', torch.cuda.max_memory_reserved(device) / 2**30):<6.2f}"]
+        # fields += [f'loss {training_stats.report0("Loss/loss", loss.sum()):<6.2f}']
         torch.cuda.reset_peak_memory_stats()
         dist.print0(' '.join(fields))
 

@@ -1,0 +1,72 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Generate EDM Images (GPU 7)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/generate.py",
+            "args": [
+                "--outdir=out",
+                "--steps=18",
+                "--network=https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-cifar10-32x32-cond-vp.pkl"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "7"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Train EDM CIFAR-10",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "torch.distributed.run",
+            "args": [
+                "--standalone",
+                "--nproc_per_node=8",
+                "train.py",
+                "--outdir=training-runs",
+                "--data=datasets/cifar10-32x32.zip",
+                "--cond=1",
+                "--arch=ddpmpp"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Train EDM CIFAR-10 (Single GPU)",
+            "type": "debugpy", 
+            "request": "launch",
+            "program": "train.py",
+            "args": [
+                "--outdir=training-runs",
+                "--data=datasets/cifar10-32x32.zip",
+                "--cond=1",
+                "--arch=ddpmpp",
+                "--batch-gpu=32"  // Reduced batch size for single GPU
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Train EDM Classifier",
+            "type": "debugpy", 
+            "request": "launch",
+            "program": "train.py",
+            "args": [
+                "--outdir=training-runs",
+                "--data=/home/23124047r/edm/datasets/metfaces-64x64.zip",
+                "--data-src=/home/23124047r/edm/datasets/ffhq-64x64.zip",
+                "--cond=0",
+                "--arch=ddpmpp",
+                "--batch-gpu=32"  // Reduced batch size for single GPU
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}

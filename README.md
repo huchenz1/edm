@@ -244,3 +244,19 @@ This is a research reference implementation and is treated as a one-time code dr
 ## Acknowledgments
 
 We thank Jaakko Lehtinen, Ming-Yu Liu, Tuomas Kynk&auml;&auml;nniemi, Axel Sauer, Arash Vahdat, and Janne Hellsten for discussions and comments, and Tero Kuosmanen, Samuel Klenberg, and Janne Hellsten for maintaining our compute infrastructure.
+
+
+
+torchrun --standalone --nproc_per_node=8 generate.py --outdir=fid-tmp --seeds=0-49999 --subdirs \
+    --network=https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-ffhq-64x64-uncond-vp.pkl
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --standalone --nproc_per_node=4 train.py --outdir=training-runs \
+    --data=/home/23124047r/edm/datasets/metfaces-64x64.zip  --data-src=/home/23124047r/edm/datasets/ffhq-64x64.zip --cond=0 --arch=ddpmpp  --batch=256 --cres=1,2,2,2 --lr=2e-4 --dropout=0.05 --augment=0.15
+
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --standalone --nproc_per_node=4 train.py --outdir=training-runs \
+    --data=/home/23124047r/edm/datasets/metfaces-64x64.zip --cond=0 --arch=ddpmpp  --batch=256 --cres=1,2,2,2 --lr=2e-4 --dropout=0.05 --augment=0.15
+
+
+CUDA_VISIBLE_DEVICES=7 python generate.py --outdir=out --steps=40 \
+    --network=/home/23124047r/edm/training-runs/00015-metfaces-64x64-uncond-ddpmpp-edm-gpus4-batch256-fp32/network-snapshot-000000.pkl

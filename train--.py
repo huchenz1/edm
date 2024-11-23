@@ -77,9 +77,6 @@ def parse_int_list(s):
 @click.option('--resume',        help='Resume from previous training state', metavar='PT',          type=str)
 @click.option('-n', '--dry-run', help='Print training options and exit',                            is_flag=True)
 
-
-@click.option('--data-src',      help='Path to the source dataset', metavar='ZIP|DIR',             type=str)
-
 def main(**kwargs):
     """Train diffusion-based generative model using the techniques described in the
     paper "Elucidating the Design Space of Diffusion-Based Generative Models".
@@ -97,50 +94,21 @@ def main(**kwargs):
 
     # Initialize config dict.
     c = dnnlib.EasyDict()
-    # dataset_obj.resolution = 64
     c.dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=opts.data, use_labels=opts.cond, xflip=opts.xflip, cache=opts.cache)
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=opts.workers, prefetch_factor=2)
     c.network_kwargs = dnnlib.EasyDict()
     c.loss_kwargs = dnnlib.EasyDict()
     c.optimizer_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', lr=opts.lr, betas=[0.9,0.999], eps=1e-8)
 
-
-
-
-
-
-
-
-
-
-
-
-
     # Validate dataset options.
     try:
         dataset_obj = dnnlib.util.construct_class_by_name(**c.dataset_kwargs)
         dataset_name = dataset_obj.name
-        c.dataset_kwargs.resolution =  dataset_obj.resolution # be explicit about dataset resolution
+        c.dataset_kwargs.resolution = dataset_obj.resolution # be explicit about dataset resolution
         c.dataset_kwargs.max_size = len(dataset_obj) # be explicit about dataset size
         if opts.cond and not dataset_obj.has_labels:
             raise click.ClickException('--cond=True requires labels specified in dataset.json')
         del dataset_obj # conserve memory
-
-
-
-
-        c.src_dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=opts.data_src, use_labels=opts.cond, xflip=opts.xflip, cache=opts.cache)
-        c.src_data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=opts.workers, prefetch_factor=2)
-        src_dataset_obj = dnnlib.util.construct_class_by_name(**c.src_dataset_kwargs)
-        src_dataset_name = src_dataset_obj.name
-        c.src_dataset_kwargs.resolution =  src_dataset_obj.resolution # be explicit about dataset resolution
-        c.src_dataset_kwargs.max_size = len(src_dataset_obj) # be explicit about dataset size
-        del src_dataset_obj # conserve memory  
-
-
-
-
-
     except IOError as err:
         raise click.ClickException(f'--data: {err}')
 
@@ -258,7 +226,6 @@ def main(**kwargs):
         dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
 
     # Train.
-    c.resume_pkl = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-ffhq-64x64-uncond-vp.pkl'
     training_loop.training_loop(**c)
 
 #----------------------------------------------------------------------------

@@ -63,7 +63,7 @@ class VELoss:
 # of Diffusion-Based Generative Models" (EDM).
 
 @persistence.persistent_class
-class EDMLoss:
+class EDMLoss_:
     def __init__(self, P_mean=-1.2, P_std=1.2, sigma_data=0.5):
         self.P_mean = P_mean
         self.P_std = P_std
@@ -80,3 +80,34 @@ class EDMLoss:
         return loss
 
 #----------------------------------------------------------------------------
+
+
+@persistence.persistent_class
+class EDMLoss:
+    def __init__(self, P_mean=-1.2, P_std=1.2, sigma_data=0.5):
+        self.P_mean = P_mean
+        self.P_std = P_std
+        self.sigma_data = sigma_data
+        self.loss_ce = torch.nn.CrossEntropyLoss()
+
+    def __call__(self, net, images, labels=None, augment_pipe=None, src_images=None, src_labels=None):
+        rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
+        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
+        weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
+        y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
+        n = torch.randn_like(y) * sigma
+        if src_images is None:
+            D_yn = net(y + n, sigma, labels, augment_labels=augment_labels)
+            loss = weight * ((D_yn - y) ** 2)
+            return loss
+        else:
+            D_yn, class_logits = net(y + n, sigma, labels, augment_labels=augment_labels, return_logits=True)
+            loss = weight * ((D_yn - y) ** 2)
+            # if torch.rand(1) < 0.5:
+            loss_cls_trg = self.loss_ce(class_logits, torch.zeros(images.shape[0], dtype=torch.long, device=images.device))
+            D_src_yn, class_logits_src = net(src_images + n, sigma, src_labels, augment_labels=augment_labels, return_logits=True)
+            loss_cls_src = self.loss_ce(class_logits_src, torch.ones(src_images.shape[0], dtype=torch.long, device=src_images.device))
+            loss_cls = loss_cls_trg + loss_cls_src
+            # else:s
+            #     loss_cls = 0
+            return loss, loss_cls
